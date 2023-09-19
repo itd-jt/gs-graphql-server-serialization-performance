@@ -1,288 +1,88 @@
 :spring_version: current
-:project_id: gs-graphql-server
+:project_id: gs-graphql-server-serialization-performance
 :icons: font
 :source-highlighter: prettify
 
-https://spring.io/projects/spring-graphql[Spring for GraphQL] provides support for Spring applications built on https://www.graphql-java.com/[GraphQL Java].
-
-This guide walks you through the process of creating a GraphQL service in Java using Spring for GraphQL.
+https://spring.io/projects/gs-graphql-server-serialization-performancel[Spring for GraphQL Serialization Performance] is a fork of gs-graphql-server that shows the performance of GQL serialization.
 
 == What You Will Build
 You will build a service that will accept GraphQL requests at `http://localhost:8080/graphql`.
 
-== What You Need
+== How to use it
+**Build and start the application with Gradle**
 
-:java_version: 17
-include::https://raw.githubusercontent.com/spring-guides/getting-started-macros/main/prereq_editor_jdk_buildtools.adoc[]
+cd complete +
+./gradlew bootRun
 
-include::https://raw.githubusercontent.com/spring-guides/getting-started-macros/main/how_to_complete_this_guide.adoc[]
+Ensure that no other process is using port 8080.
+Ensure that the server started up successfully.
 
-[[scratch]]
-== Starting with Spring Initializr
+**Run the performance measuring script**
 
-To manually initialize the project:
+cd performance-measuring-script +
+./measure_all.sh
 
-. Navigate to https://start.spring.io.
-This service pulls in all the dependencies you need for an application and does most of the setup for you.
-. Choose either Gradle or Maven and the language you want to use. This guide assumes that you chose Java.
-. Click *Dependencies* and select *Spring for GraphQL* and *Spring Web*.
-. Click *Generate*.
-. Download the resulting ZIP file, which is an archive of a GraphQL application that is configured with your choices.
+== Context
+We found out that GQL queries with large payloads/results are relatively slow to serialize compared with the performance required by our service and repository layer including RDBMS performance.
+We wanted to measure the performance of GQL serialization and compare it with other serialization methods.
 
-NOTE: If your IDE has the Spring Initializr integration, you can complete this process from your IDE.
+Our approach was to compare the performance of the default GQL serialization with a custom serialization method.
 
-NOTE: You can also fork the project from https://github.com/spring-guides/gs-graphql-server[GitHub] and open it in your IDE or other editor.
+This is how we compared serialization performance in detail:
 
-[[initial]]
-== A very short introduction to GraphQL
+- The "GQL serialization"-approach is the standard way of serializing data with GQL as provided in the original gs-graphql-server sample.
+We extended the original sample with a new query "allBooks" that returns a specified number of books.
 
-GraphQL is a query language to retrieve data from a server.
-It is an alternative to REST, SOAP, or gRPC.
-In this tutorial, we will query the details for a specific book from an online store backend.
+`query { allBooks(nrOfBooks: $nrOfBooks) { id name pageCount author { id firstName lastName } } }`
 
-This is an example request you can send to a  GraphQL server to retrieve book details:
+- The "JSON via GQL serialization"-approach uses a custom query "allBooksAsJson" that returns the specified number of books and all the attributes of the "GQL serialization" query as JSON string.
+We used jackson standard serialization to serialize the data to JSON.
 
-[source,graphql]
-----
-query bookDetails {
-  bookById(id: "book-1") {
-    id
-    name
-    pageCount
-    author {
-      firstName
-      lastName
-    }
-  }
-}
-----
+`query { allBooksAsJSON(nrOfBooks: $nrOfBooks) }`
 
-This GraphQL request says:
 
-* perform a query for a book with id "book-1"
-* for the book, return id, name, pageCount and author
-* for the author, return firstName and lastName
+== Measurement
 
-The response is in JSON. For example:
+Measurement: Number of Books / Total Request Duration
 
-[source,json]
-----
-{
-  "bookById": {
-    "id":"book-1",
-    "name":"Effective Java",
-    "pageCount":416,
-    "author": {
-      "firstName":"Joshua",
-      "lastName":"Bloch"
-    }
-  }
-}
-----
+|===
+|Number of Books |Request Duration w/ "GQL serialization" |Request Duration w/ "JSON via GQL serialization"|Comparison Factor
+|100
+|9 ms
+|6 ms
+|1.5
 
-An important feature of GraphQL is that it defines a schema language, and that it is statically typed.
-The server knows exactly what types of objects requests can query and what fields those objects contain.
-Furthermore, clients can introspect the server to ask for schema details.
+|1000
+|65 ms
+|8 ms
+|8.1
 
-NOTE: The word schema in this tutorial refers to a "GraphQL Schema", which is not related to other schemas like "JSON Schema" or "Database Schema".
+|10000
+|407 ms
+|26 ms
+|15.7
 
-The schema for the above query is:
+|100000
+|3961 ms
+|229 ms
+|17.3
 
-[source,graphql]
-----
-include::complete/src/main/resources/graphql/schema.graphqls[]
-----
+|500000
+|19864 ms
+|1199 ms
+|16.6
+|===
 
-This tutorial will focus on how to implement a GraphQL server with this schema in Java.
+== Conclusion
 
-We've barely scratched the surface of what's possible with GraphQL.
-Further information can be found on the https://graphql.org/learn/[official GraphQL page].
+In our measurement the total request time was *was about 15 times slower using GQL serialization compared with our custom serialization method* with a high number (10 thousand or more) of books.
 
-== Our example API: getting book details
-These are the main steps to create a server with Spring for GraphQL:
+In our real world application the time to serialize the data is a significant part of the total request duration when retrieving a large amount of data (regardless whether pagination is user or not).
 
-. Define a GraphQL schema
-. Implement the logic to fetch the actual data for a query
+- When using Java/JPA in an AWS environment to fetch data from an AWS Postgres RDS instance we are able to fetch about 200 rows per ms (same number of fields/columns as in this example).
+- When fetching 100000 books the time to fetch the data from the database is about 500 ms compared to about 4000 ms to serialize the data via GQL standard serialization which results into 11% fetching vs. 89% serialization.
 
-Our example app will be a simple API to get details for a specific book.
-It is not intended to be a comprehensive API.
+We are aware that this behavior usually does not affect ordinary GQL frontends that fetch data from a GQL backend.
+On the other hand this behavior can become a critical issue for use cases like data export, reporting or data transfer where a large amount of data is fetched from a GQL backend and processed further.
 
-== Schema
-In your Spring for GraphQL application prepared earlier, create a directory `src/main/resources/graphql`.
-Add a new file `schema.graphqls` to this folder with the following content:
-
-[source,graphql]
-----
-include::complete/src/main/resources/graphql/schema.graphqls[]
-----
-
-Every GraphQL schema has a top-level `Query` type, and the fields under it are the query operations exposed by the application.
-Here the schema defines one query called `bookById` that returns the details of a specific book.
-
-It also defines the types `Book` with fields `id`, `name`, `pageCount` and `author`, and the type `Author` with fields `firstName` and `lastName`.
-
-NOTE: The Domain Specific Language used above to describe a schema is called the Schema Definition Language or SDL.
-For more details, see the https://graphql.org/learn/schema/[GraphQL documentation].
-
-== Source of the data
-
-A key strength of GraphQL is that data can be sourced from anywhere.
-Data can come from a database, an external service, or a static in-memory list.
-
-To simplify the tutorial, book and author data will come from static lists inside their respective classes.
-
-=== Create the Book and Author data sources
-
-Let's now create the `Book` and `Author` classes in the main application package, right next to `GraphQlServerApplication`.
-Use the following as their content:
-
-[source,java]
-----
-include::complete/src/main/java/com/example/graphqlserver/Book.java[]
-----
-
-[source,java]
-----
-include::complete/src/main/java/com/example/graphqlserver/Author.java[]
-----
-
-== Adding code to fetch data
-
-Spring for GraphQL provides an https://docs.spring.io/spring-graphql/docs/current/reference/html/#controllers[annotation-based programming model].
-With controller annotated methods, we can declare how to fetch the data for specific GraphQL fields.
-
-Add the following to `BookController.java` in the main application package, next to `Book` and `Author`:
-
-[source,java]
-----
-include::complete/src/main/java/com/example/graphqlserver/BookController.java[]
-----
-
-By defining a method named `bookById` annotated with `@QuerMapping`, this controller declares how to fetch a `Book` as defined under the Query type.
-The query field is determined from the method name, but can also be declared on the annotation itself.
-
-NOTE: Spring for GraphQL uses `RuntimeWiring.Builder` that registers each such controller method as a GraphQL Java `graphql.schema.DataFetcher`.
-A `DataFetcher` provides the logic to fetch the data for a query or for any schema field.
-The Spring Boot starter for GraphQL has auto-configurations that automates this registration.
-
-In the GraphQL Java engine, `DataFetchingEnvironment` provides access to a map of field-specific argument values.
-Use the `@Argument` annotation to have an argument bound to a target object and injected into the controller method.
-By default, the method parameter name is used to look up the argument, but can also be specified on the annotation itself.
-
-This `bookById` method defines how to get a specific `Book`, but does not take care of fetching the related `Author`.
-If the request asks for the author information, GraphQL Java will need to fetch this field.
-
-The `@SchemaMapping` annotation maps a handler method to a field in the GraphQL schema and declares it to be the `DataFetcher` for that field.
-The field name defaults to the method name, and the type name defaults to the simple class name of the source/parent object injected into the method.
-In this example, the field defaults to `author` and the type defaults to `Book`.
-
-For more, see the https://docs.spring.io/spring-graphql/docs/current/reference/html/#controllers[documentation for the Spring for GraphQL annotated controller feature].
-
-That's all the code we need!
-
-Let's run our first query.
-
-== Running our first query
-
-=== Enable the GraphiQL Playground
-
-GraphiQL is a useful visual interface for writing and executing queries, and much more.
-Enable GraphiQL by adding this config to the `application.properties` file.
-
-[source,properties]
-----
-spring.graphql.graphiql.enabled=true
-----
-
-=== Boot the application
-
-Start your Spring application. Navigate to http://localhost:8080/graphiql.
-
-=== Run the query
-
-Type in the query and click the play button at the top of the window.
-
-[source,graphql]
-----
-query bookDetails {
-  bookById(id: "book-1") {
-    id
-    name
-    pageCount
-    author {
-      id
-      firstName
-      lastName
-    }
-  }
-}
-----
-
-You should see a response like this.
-
-image::https://raw.githubusercontent.com/spring-guides/gs-graphql-server/main/graphiql.png[GraphQL response]
-
-Congratulations, you have built a GraphQL service and executed your first query! With the help of Spring for GraphQL, you were able to achieve this with only a few lines of code.
-
-=== Testing
-Spring for GraphQL provides helpers for GraphQL testing in the `spring-graphql-test` artifact. We have already included this artifact as part of the project generated by Spring Initializr.
-
-Thoroughly testing a GraphQL service requires tests with different scopes. In this tutorial, we will write a `@GraphQlTest` slice test, which focuses on a single controller.
-There are other helpers to assist with full end-to-end integration tests and focused server side tests.
-For the full details, see the https://docs.spring.io/spring-graphql/docs/current/reference/html/#testing[Spring for GraphQL Testing documentation] and https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#features.testing.spring-boot-applications.spring-graphql-tests[Auto-configured Spring for GraphQL tests] in the Spring Boot documentation.
-
-Let's write a controller slice test that verifies the same `bookDetails` query requested in the GraphiQL playground a few moments ago.
-
-Add the following to a test file `BookControllerTests.java`. Save this file in a location within the `src/test/java/com/example/graphqlserver/` folder.
-
-[source,java]
-----
-include::complete/src/test/java/com/example/graphqlserver/BookControllerTests.java[]
-----
-
-This test refers to a GraphQL query similar to what we used in the GraphiQL Playground.
-It's parameterized with an `$id` to make it reusable.
-Add this query in a `bookDetails.graphql` file located in `src/test/resources/graphql-test`.
-
-[source,graphql]
-----
-include::complete/src/test/resources/graphql-test/bookDetails.graphql[]
-----
-
-Run the test and verify that the result is identical to the GraphQL query manually requested in the GraphiQL Playground.
-
-The `@GraphQlTest` annotation is useful for writing controller slice tests, which are focused on a single controller.
-`@GraphQlTest` auto-configures the Spring for GraphQL infrastructure, without any transport nor server being involved.
-Automatic configuration enables us to write tests faster by skipping boilerplate code.
-As this is a focused slice test, only a limited number of beans are scanned including `@Controller` and `RuntimeWiringConfigurer`.
-For the list of scanned beans, see the https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#appendix.test-auto-configuration[documentation].
-
-`GraphQlTester` is a contract that declares a common workflow for testing GraphQL requests, independent of transport.
-In our test, we provide a document with `documentName` with the required variables, then `execute` the request.
-We then select a part of the response with its JSON path and assert that the JSON at this location matches the expected result.
-
-Congratulations! In this tutorial you built a GraphQL service, ran your first query, and wrote your first GraphQL test!
-
-== Further reading
-
-=== Sample source code
-
-This guide has been written in collaboration with the https://www.graphql-java.com/[GraphQL Java] team.
-Huge thanks to https://github.com/dondonz[Donna Zhou], https://github.com/bbakerman[Brad Baker], and https://github.com/andimarek[Andreas Marek]!
-The source code for this tutorial can be found on https://github.com/spring-guides/gs-graphql-server[GitHub].
-
-=== Documentation
-
-Read the https://docs.spring.io/spring-graphql/docs/current/reference/html/[Spring for GraphQL documentation].
-
-GraphQL Java is the GraphQL engine powering Spring for GraphQL. Read the https://www.graphql-java.com/documentation/getting-started[GraphQL Java documentation].
-
-=== More Spring for GraphQL examples
-
-See more samples in the
-https://github.com/spring-projects/spring-graphql/tree/1.0.x/samples[1.0.x branch], which will soon be https://github.com/spring-projects/spring-graphql/issues/208[moved into] a separate repository.
-
-=== Stack Overflow questions
-You can raise questions on https://stackoverflow.com/questions/tagged/spring-graphql[Stack Overflow with the spring-graphql] tag.
-
-include::https://raw.githubusercontent.com/spring-guides/getting-started-macros/main/footer.adoc[]
+So *the question we are currently concerned with is whether GraphQL and GraphQL-Java is the right framework to create backends for the second category of use cases.*
